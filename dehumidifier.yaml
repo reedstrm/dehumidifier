@@ -3,32 +3,34 @@ substitutions:
   friendly_name: "Dehumidifier Retrofit"
 
   # --- Physical Pin Map ---
-  pin_dht: D1
-  pin_float: D2
-  pin_adc: A0
-  pin_fan_low:  D6
-  pin_fan_med:  D5
-  pin_fan_high: D0
-  pin_comp:     D7
-  pin_btn_dehu: D3
-  pin_btn_fan:  RX
-  pin_led_on:   D4
-  pin_led_auto: D8
+  pin_dht: D1        # Humidity/Temp Sensor (DHT11/22)
+  pin_float: D2      # Bucket Float Switch (GND when full)
+  pin_adc: A0        # Evaporator NTC Thermistor (Analog)
+  pin_fan_low:  D6   # Relay: Fan Low Speed
+  pin_fan_med:  D5   # Relay: Fan Med Speed
+  pin_fan_high: D0   # Relay: Fan High Speed
+  pin_comp:     D7   # Relay: Compressor
+  pin_btn_dehu: D3   # Front Panel: Dehu Toggle Button
+  pin_btn_fan:  RX   # Front Panel: Fan Mode Button (GPIO3)
+  pin_led_on:   D4   # Indicator: Active LED (and onboard Blue LED)
+  pin_led_auto: D8   # Indicator: Fan Auto LED
 
   # --- Timing & Safety Constants ---
-  startup_lockout_s: "300"
-  min_off_time_s: "300"
-  min_on_time_s:  "60"
-  rh_integrate_on_s: "60"
-  fan_runon_s: "45"
-  default_rh_setpoint: "55"
-  default_rh_hyst: "5"
-  auto_fan_med_delta: "5"
-  auto_fan_high_delta: "10"
-  ice_enter_c: "0.0"
-  ice_enter_for_s: "90"
-  ice_exit_c:  "8.0"
-  ice_exit_for_s: "30"
+  startup_lockout_s: "300"    # 5 min delay on power-on for refrigerant settling
+  min_off_time_s: "300"       # 5 min anti-short cycle for compressor
+  min_on_time_s:  "60"        # 1 min minimum run time to move oil
+  rh_integrate_on_s: "60"     # Require RH high for 60s before starting
+  fan_runon_s: "45"           # Keep fan on after compressor stops to dry coils
+  default_rh_setpoint: "55"   # Target Relative Humidity %
+  default_rh_hyst: "5"        # +/- Hysteresis (Prevents "flapping")
+  auto_fan_med_delta: "5"     # Speed up to Med if RH is 5% over setpoint
+  auto_fan_high_delta: "10"   # Speed up to High if RH is 10% over setpoint
+  
+  # --- Defrost Parameters ---
+  ice_enter_c: "0.0"          # Temperature to trigger defrost logic
+  ice_enter_for_s: "90"       # Must stay below ice_enter_c for 90s
+  ice_exit_c:  "8.0"          # Temperature to resume normal operation
+  ice_exit_for_s: "30"        # Must stay above ice_exit_c for 30s
 
 esp8266:
   board: d1_mini
@@ -37,7 +39,7 @@ esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   on_boot:
-    priority: 600
+    priority: 600 # Run early to ensure relays stay OFF during boot
     then:
       - script.execute: all_outputs_off
       - lambda: |-
@@ -64,9 +66,10 @@ ota:
   - platform: esphome
 
 logger:
-  baud_rate: 0 
+  baud_rate: 0 # Necessary to use RX/TX pins for GPIO
 
 globals:
+  # --- Transient State ---
   - id: compressor_allowed
     type: bool
     initial_value: "false"
@@ -87,6 +90,8 @@ globals:
   - id: defrost_start_ms
     type: uint32_t
     initial_value: "0"
+
+  # --- Persistent Stats ---
   - id: defrost_last_ms
     type: uint32_t
     restore_value: yes
@@ -117,19 +122,17 @@ select:
   - platform: template
     id: fan_mode_request
     name: "Fan Mode Request"
-    options:
-      - "Off"
-      - "Auto"
-      - "Low"
-      - "Med"
-      - "High"
+    options: ["Off", "Auto", "Low", "Med", "High"]
     initial_option: "Auto"
     optimistic: true
     on_value:
       - script.execute: apply_fan_mode
       - lambda: |-
-          if (x == "Auto") id(led_fan_auto).turn_on().perform();
-          else id(led_fan_auto).turn_off().perform();
+          if (x == "Auto") {
+            id(led_fan_auto).turn_on().perform();
+          } else {
+            id(led_fan_auto).turn_off().perform();
+          }
 
 number:
   - platform: template
@@ -142,6 +145,7 @@ number:
     initial_value: ${default_rh_setpoint}
     optimistic: true
     restore_value: true
+
   - platform: template
     id: rh_hyst
     name: "RH Hysteresis"
@@ -171,7 +175,8 @@ switch:
     internal: true
     pin: ${pin_comp}
     on_turn_on:
-      - lambda: 'id(comp_on_since_ms) = millis();'
+      - lambda: |-
+          id(comp_on_since_ms) = millis();
     on_turn_off:
       - script.execute: compressor_lockout
       - script.execute: compressor_fan_runon
@@ -205,7 +210,7 @@ binary_sensor:
   
   - platform: gpio
     id: dehu_button
-    name: "Dehumidifier Button"
+    name: "Dehu Toggle Button"
     pin:
       number: ${pin_btn_dehu}
       mode: INPUT_PULLUP
@@ -215,7 +220,7 @@ binary_sensor:
 
   - platform: gpio
     id: fan_button
-    name: "Fan Button"
+    name: "Fan Cycle Button"
     pin:
       number: ${pin_btn_fan}
       mode: INPUT_PULLUP
@@ -237,35 +242,46 @@ sensor:
   - platform: dht
     pin: ${pin_dht}
     model: DHT11
-    humidity:
+    humidity: 
       id: rh
       name: "Humidity"
-    temperature:
+    temperature: 
       id: intake_temp
       name: "Intake Temp"
     update_interval: 5s
+
   - platform: adc
     pin: ${pin_adc}
     id: evap_adc
-    filters: [{ multiply: 3.3 }]
+    filters:
+      - multiply: 3.3
+
   - platform: resistance
     id: evap_resistance
     sensor: evap_adc
     configuration: UPSTREAM
     resistor: 19.91kOhm
+
   - platform: ntc
     id: evap_temp
     name: "Evap Temp"
     sensor: evap_resistance
-    calibration: { b_constant: 3640, reference_temperature: 25°C, reference_resistance: 20kOhm }
+    calibration:
+      b_constant: 3640
+      reference_temperature: 25°C
+      reference_resistance: 20kOhm
+
   - platform: template
     name: "Defrost Count"
     accuracy_decimals: 0
-    lambda: 'return (float) id(defrost_count);'
+    lambda: |-
+      return (float) id(defrost_count);
+
   - platform: template
     name: "Defrost Last Duration"
     unit_of_measurement: "s"
-    lambda: 'return (float) (id(defrost_last_ms) / 1000.0);'
+    lambda: |-
+      return (float) (id(defrost_last_ms) / 1000.0);
 
 text_sensor:
   - platform: template
@@ -276,6 +292,7 @@ text_sensor:
     name: "Fan Mode"
 
 script:
+  # Safety Script: Force all power relays off
   - id: all_outputs_off
     then:
       - switch.turn_off: fan_low_relay
@@ -283,6 +300,7 @@ script:
       - switch.turn_off: fan_high_relay
       - switch.turn_off: compressor_relay
 
+  # The "Fan Brain": Maps requested modes to physical relays
   - id: apply_fan_mode
     mode: restart
     then:
@@ -293,40 +311,82 @@ script:
           esphome::switch_::Switch* target = nullptr;
           std::string label = "Off";
 
-          if (defrost) { target = id(fan_high_relay); label = "Defrost High"; }
-          else if (req == "Low")  { target = id(fan_low_relay); label = "Low"; }
-          else if (req == "Med")  { target = id(fan_med_relay); label = "Med"; }
-          else if (req == "High") { target = id(fan_high_relay); label = "High"; }
+          if (defrost) { 
+            target = id(fan_high_relay); 
+            label = "Defrost High"; 
+          }
+          else if (req == "Low")  { 
+            target = id(fan_low_relay); 
+            label = "Low"; 
+          }
+          else if (req == "Med")  { 
+            target = id(fan_med_relay); 
+            label = "Med"; 
+          }
+          else if (req == "High") { 
+            target = id(fan_high_relay); 
+            label = "High"; 
+          }
           else if (req == "Auto") {
             if (comp_on) {
-              if (isnan(id(rh).state)) { target = id(fan_low_relay); label = "Low (Auto/Error)"; }
+              if (isnan(id(rh).state)) { 
+                target = id(fan_low_relay); 
+                label = "Low (Auto/Error)"; 
+              }
               else {
                 float err = id(rh).state - id(rh_setpoint).state;
-                if (err >= ${auto_fan_high_delta}) target = id(fan_high_relay);
-                else if (err >= ${auto_fan_med_delta}) target = id(fan_med_relay);
-                else target = id(fan_low_relay);
+                if (err >= ${auto_fan_high_delta}) {
+                  target = id(fan_high_relay);
+                }
+                else if (err >= ${auto_fan_med_delta}) {
+                  target = id(fan_med_relay);
+                }
+                else {
+                  target = id(fan_low_relay);
+                }
                 label = "Auto";
               }
-            } else { target = nullptr; label = "Off"; }
+            } else { 
+              target = nullptr; 
+              label = "Off"; 
+            }
           }
-          if (id(fan_low_relay).state && target != id(fan_low_relay)) id(fan_low_relay).turn_off();
-          if (id(fan_med_relay).state && target != id(fan_med_relay)) id(fan_med_relay).turn_off();
-          if (id(fan_high_relay).state && target != id(fan_high_relay)) id(fan_high_relay).turn_off();
-          if (target != nullptr && !target->state) target->turn_on();
+
+          if (id(fan_low_relay).state && target != id(fan_low_relay)) {
+            id(fan_low_relay).turn_off();
+          }
+          if (id(fan_med_relay).state && target != id(fan_med_relay)) {
+            id(fan_med_relay).turn_off();
+          }
+          if (id(fan_high_relay).state && target != id(fan_high_relay)) {
+            id(fan_high_relay).turn_off();
+          }
+          
+          if (target != nullptr && !target->state) {
+            target->turn_on();
+          }
           id(fan_mode_actual).publish_state(label);
 
+  # Anti-short cycle timer
   - id: compressor_lockout
     mode: restart
     then:
-      - lambda: 'id(compressor_allowed) = false; id(lockout_end_ms) = millis() + (${min_off_time_s}*1000);'
+      - lambda: |-
+          id(compressor_allowed) = false; 
+          id(lockout_end_ms) = millis() + (${min_off_time_s}*1000);
       - delay: ${min_off_time_s}s
-      - lambda: 'id(compressor_allowed) = true; id(lockout_end_ms) = 0;'
+      - lambda: |-
+          id(compressor_allowed) = true; 
+          id(lockout_end_ms) = 0;
 
+  # Drying run-on: Dries the evaporator to prevent mold
   - id: compressor_fan_runon
     mode: restart
     then:
       - if:
-          condition: { lambda: 'return id(dehu_request).state && !id(in_defrost);' }
+          condition: 
+            lambda: |-
+              return id(dehu_request).state && !id(in_defrost);
           then:
             - lambda: |-
                 if (id(fan_med_relay).state) id(fan_med_relay).turn_off();
@@ -338,15 +398,23 @@ script:
 
   - id: start_defrost
     then:
-      - lambda: 'if(id(in_defrost)) return; id(in_defrost)=true; id(defrost_start_ms)=millis(); id(defrost_count)++;'
+      - lambda: |-
+          if(id(in_defrost)) {
+            return;
+          } 
+          id(in_defrost) = true; 
+          id(defrost_start_ms) = millis(); 
+          id(defrost_count)++;
       - switch.turn_off: compressor_relay
       - script.execute: apply_fan_mode
 
   - id: stop_defrost
     then:
       - lambda: |-
-          if(!id(in_defrost)) return; 
-          id(in_defrost)=false;
+          if(!id(in_defrost)) {
+            return; 
+          }
+          id(in_defrost) = false;
           if(id(defrost_start_ms) > 0) {
             uint32_t d = millis() - id(defrost_start_ms);
             id(defrost_last_ms) = d;
@@ -355,47 +423,97 @@ script:
           }
       - script.execute: apply_fan_mode
 
+# Main Control Loop
 interval:
   - interval: 2s
     then:
       - lambda: |-
-          if (id(in_defrost)) id(dehu_state).publish_state("Defrost");
-          else if (id(bucket_full).state) id(dehu_state).publish_state("Bucket Full");
-          else if (isnan(id(rh).state)) id(dehu_state).publish_state("Bad RH Sensor");
+          // 1. Update Display State
+          if (id(in_defrost)) {
+            id(dehu_state).publish_state("Defrost");
+          }
+          else if (id(bucket_full).state) {
+            id(dehu_state).publish_state("Bucket Full");
+          }
+          else if (isnan(id(rh).state)) {
+            id(dehu_state).publish_state("Bad RH Sensor");
+          }
           else if (id(dehu_request).state) {
             if (!id(compressor_allowed)) {
               int rem = (id(lockout_end_ms) > millis()) ? (id(lockout_end_ms)-millis())/1000 : 0;
-              char buf[32]; sprintf(buf, "Lockout (%ds)", rem); id(dehu_state).publish_state(buf);
-            } else if (id(compressor_relay).state) id(dehu_state).publish_state("Dehumidifying");
-            else id(dehu_state).publish_state("Idle (Wait RH)");
-          } else id(dehu_state).publish_state("Monitor");
-
-      - if:
-          condition: { lambda: 'return id(bucket_full).state || !id(dehu_request).state || isnan(id(rh).state);' }
-          then:
-            - switch.turn_off: compressor_relay
-            - lambda: 'id(rh_high_since_ms) = 0;'
-
-      - lambda: |-
-          if (!id(dehu_request).state || isnan(id(evap_temp).state)) return;
-          float t = id(evap_temp).state; 
-          uint32_t now = millis();
-          if (!id(in_defrost)) {
-            if (t <= ${ice_enter_c}) {
-              if (id(evap_cold_since_ms)==0) id(evap_cold_since_ms)=now;
-              if (now-id(evap_cold_since_ms) >= ${ice_enter_for_s}*1000) id(start_defrost).execute();
-            } else id(evap_cold_since_ms)=0;
-          } else {
-            if (t >= ${ice_exit_c}) {
-              if (id(evap_warm_since_ms)==0) id(evap_warm_since_ms)=now;
-              if (now-id(evap_warm_since_ms) >= ${ice_exit_for_s}*1000) id(stop_defrost).execute();
-            } else id(evap_warm_since_ms)=0;
+              char buf[32]; 
+              sprintf(buf, "Lockout (%ds)", rem); 
+              id(dehu_state).publish_state(buf);
+            } 
+            else if (id(compressor_relay).state) {
+              id(dehu_state).publish_state("Dehumidifying");
+            }
+            else {
+              id(dehu_state).publish_state("Idle (Wait RH)");
+            }
+          } 
+          else {
+            id(dehu_state).publish_state("Monitor Only");
           }
-          if (id(in_defrost) || id(bucket_full).state || isnan(id(rh).state)) return;
-          float h = id(rh).state; float sp = id(rh_setpoint).state; float hy = id(rh_hyst).state;
-          if (h > (sp+hy)) { if(id(rh_high_since_ms)==0) id(rh_high_since_ms)=now; } else id(rh_high_since_ms)=0;
-          if (!id(compressor_relay).state) {
-            if (id(compressor_allowed) && id(rh_high_since_ms)!=0 && (now-id(rh_high_since_ms) >= ${rh_integrate_on_s}*1000)) id(compressor_relay).turn_on();
-          } else if (h < (sp-hy) && (now-id(comp_on_since_ms) >= ${min_on_time_s}*1000)) id(compressor_relay).turn_off();
+
+          // 2. Immediate Safety Shutdowns
+          if (id(bucket_full).state || !id(dehu_request).state || isnan(id(rh).state)) {
+            id(compressor_relay).turn_off();
+            id(rh_high_since_ms) = 0;
+          }
+
+          // 3. Defrost Logic (Coil temp check)
+          if (id(dehu_request).state && !isnan(id(evap_temp).state)) {
+            float t = id(evap_temp).state; 
+            uint32_t now = millis();
+            if (!id(in_defrost)) {
+              if (t <= ${ice_enter_c}) {
+                if (id(evap_cold_since_ms) == 0) {
+                  id(evap_cold_since_ms) = now;
+                }
+                if (now - id(evap_cold_since_ms) >= ${ice_enter_for_s} * 1000) {
+                  id(start_defrost).execute();
+                }
+              } else {
+                id(evap_cold_since_ms) = 0;
+              }
+            } else {
+              if (t >= ${ice_exit_c}) {
+                if (id(evap_warm_since_ms) == 0) {
+                  id(evap_warm_since_ms) = now;
+                }
+                if (now - id(evap_warm_since_ms) >= ${ice_exit_for_s} * 1000) {
+                  id(stop_defrost).execute();
+                }
+              } else {
+                id(evap_warm_since_ms) = 0;
+              }
+            }
+          }
+
+          // 4. Compressor Demand (Humidity check)
+          if (!id(in_defrost) && !id(bucket_full).state && !isnan(id(rh).state)) {
+            float h = id(rh).state; 
+            float sp = id(rh_setpoint).state; 
+            float hy = id(rh_hyst).state;
+            uint32_t now = millis();
+            
+            if (h > (sp + hy)) { 
+              if (id(rh_high_since_ms) == 0) {
+                id(rh_high_since_ms) = now;
+              }
+            } else {
+              id(rh_high_since_ms) = 0;
+            }
+            
+            if (!id(compressor_relay).state) {
+              if (id(compressor_allowed) && id(rh_high_since_ms) != 0 && (now - id(rh_high_since_ms) >= ${rh_integrate_on_s} * 1000)) {
+                id(compressor_relay).turn_on();
+              }
+            } 
+            else if (h < (sp - hy) && (now - id(comp_on_since_ms) >= ${min_on_time_s} * 1000)) {
+              id(compressor_relay).turn_off();
+            }
+          }
 
       - script.execute: apply_fan_mode
