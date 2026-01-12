@@ -46,7 +46,7 @@ esphome:
   friendly_name: ${friendly_name}
 
   on_boot:
-    priority: -100
+    priority: 600
     then:
       - script.execute: all_outputs_off
       - lambda: |-
@@ -60,9 +60,6 @@ esphome:
           id(comp_on_since_ms) = 0;
 
           id(defrost_start_ms) = 0;
-          id(defrost_last_ms) = 0;
-          id(defrost_total_ms) = 0;
-          id(defrost_count) = 0;
       - delay: ${startup_lockout_s}s
       - lambda: |-
           id(compressor_allowed) = true;
@@ -84,6 +81,7 @@ logger:
   baud_rate: 0
 api:
 ota:
+  - platform: esphome
 
 # ----------------------------
 # Globals
@@ -123,18 +121,17 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: "0"
+
+  # cummulative to allow analysis
   - id: defrost_last_ms
     type: uint32_t
-    restore_value: no
-    initial_value: "0"
+    restore_value: yes
   - id: defrost_total_ms
     type: uint32_t
-    restore_value: no
-    initial_value: "0"
+    restore_value: yes
   - id: defrost_count
     type: uint32_t
-    restore_value: no
-    initial_value: "0"
+    restore_value: yes
 
 select:
   - platform: template
@@ -161,6 +158,7 @@ number:
     step: 1
     initial_value: ${default_rh_setpoint}
     optimistic: true
+    restore_value: true
 
   - platform: template
     id: rh_hyst
@@ -171,6 +169,7 @@ number:
     step: 1
     initial_value: ${default_rh_hyst}
     optimistic: true
+    restore_value: true
 
 # ----------------------------
 # Internal relay outputs (NOT exposed)
@@ -244,7 +243,6 @@ binary_sensor:
     pin:
       number: ${pin_float}
       mode: INPUT_PULLUP
-      inverted: true
     filters:
       - delayed_on: 50ms
       - delayed_off: 50ms
@@ -364,7 +362,7 @@ script:
       - lambda: |-
           const bool comp_on = id(compressor_relay).state;
           const bool defrost = id(in_defrost);
-          std::string req = id(fan_mode_request).state.c_str();
+          std::string req = id(fan_mode_request).current_option();
 
           // Defrost override -> High
           if (defrost) {
@@ -513,6 +511,9 @@ interval:
             - switch.turn_off: compressor_relay
             - lambda: |-
                 id(rh_high_since_ms) = 0;
+            - text_sensor.template.publish:
+                id: dehu_state
+                state: "Bucket Full"
 
       # If request is off, ensure compressor stays off and exit defrost
       - if:
