@@ -104,7 +104,9 @@ globals:
 
 output:
   - platform: gpio
-    pin: ${pin_led_on}
+    pin:
+      number: ${pin_led_on}
+      inverted: true
     id: led_on_out
   - platform: gpio
     pin: ${pin_led_auto}
@@ -114,9 +116,11 @@ light:
   - platform: binary
     id: led_dehu_active
     output: led_on_out
+    restore_mode: ALWAYS_OFF
   - platform: binary
     id: led_fan_auto
     output: led_auto_out
+    restore_mode: ALWAYS_OFF
 
 select:
   - platform: template
