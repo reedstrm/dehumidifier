@@ -50,6 +50,10 @@ esphome:
           id(defrost_start_ms) = 0;
           id(evap_cold_since_ms) = 0;
           id(evap_warm_since_ms) = 0;
+      - lambda: |-
+          // Sync requested LED to request switch after restore
+          if (id(dehu_request).state) id(led_dehu_req).turn_on().perform();
+          else id(led_dehu_req).turn_off().perform();
       - delay: ${startup_lockout_s}s
       - lambda: |-
           id(compressor_allowed) = true;
@@ -118,7 +122,7 @@ output:
 light:
   - platform: binary
     id: led_dehu_req
-    name: "Dehu Requested LED"
+    internal: true
     output: led_req_out
     restore_mode: ALWAYS_OFF
 
@@ -187,17 +191,18 @@ switch:
     name: "Dehumidify Request"
     restore_mode: RESTORE_DEFAULT_OFF
     optimistic: true
-    on_state:
+    on_turn_on:
       - lambda: |-
+          id(led_dehu_req).turn_on().perform();
           id(rh_high_since_ms) = 0;
-          if (x) {
-            id(led_dehu_req).turn_on().perform();
-          } else {
-            id(led_dehu_req).turn_off().perform();
-            id(compressor_relay).turn_off();
-            id(in_defrost) = false;
-          }
-          id(apply_fan_mode).execute();
+
+    on_turn_off:
+      - lambda: |-
+          id(led_dehu_req).turn_off().perform();
+          id(rh_high_since_ms) = 0;
+          id(in_defrost) = false;
+      - switch.turn_off: compressor_relay
+      - script.execute: apply_fan_mode
 
 binary_sensor:
   - platform: gpio
@@ -254,10 +259,28 @@ sensor:
     lambda: |-
       return (float) (id(defrost_last_ms) / 1000.0);
 
+  - platform: template
+    id: fan_speed_level
+    name: "Fan Speed Level"
+    accuracy_decimals: 0
+    update_interval: 2s
+    unit_of_measurement: "level"
+    icon: mdi:fan
+    lambda: |-
+      // 0 = Off
+      // 1 = Low
+      // 2 = Med
+      // 3 = High
+
+      if (id(fan_high_relay).state) return 3;
+      if (id(fan_med_relay).state)  return 2;
+      if (id(fan_low_relay).state)  return 1;
+      return 0;
+
 text_sensor:
   - platform: template
     id: dehu_state
-    name: "Dehu State"
+    name: "Dehumidifier State"
   - platform: template
     id: fan_mode_actual
     name: "Fan Mode"
