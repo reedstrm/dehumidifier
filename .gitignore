@@ -3,3 +3,5 @@
 # You can modify this file to suit your needs.
 /.esphome/
 /secrets.yaml
+*.kicad_sch-bak
+8266_proto/8266_proto-backups/
