@@ -99,6 +99,9 @@ globals:
   - id: defrost_start_ms
     type: uint32_t
     initial_value: "0"
+  - id: compressor_start_pending
+    type: bool
+    initial_value: "false"
 
   # Persistent stats
   - id: defrost_last_ms
@@ -300,8 +303,13 @@ script:
           const bool comp_on = id(compressor_relay).state;
           const bool defrost = id(in_defrost);
           std::string req = id(fan_mode_request).current_option();
+          const bool comp_pending = id(compressor_start_pending);
           esphome::switch_::Switch* target = nullptr;
           std::string label = "Off";
+
+          if (req == "Off") {
+            id(compressor_start_pending) = false;
+          }
 
           if (defrost) {
             target = id(fan_high_relay);
@@ -316,7 +324,7 @@ script:
             target = id(fan_high_relay);
             label = "High";
           } else if (req == "Auto") {
-            if (comp_on) {
+            if (comp_on || comp_pending) {
               if (isnan(id(rh).state)) {
                 target = id(fan_low_relay);
                 label = "Low (Auto/Error)";
@@ -426,6 +434,12 @@ interval:
             id(compressor_relay).turn_off();
             id(rh_high_since_ms) = 0;
           }
+          if (id(compressor_relay).state &&
+              !id(fan_low_relay).state &&
+              !id(fan_med_relay).state &&
+              !id(fan_high_relay).state) {
+            id(compressor_relay).turn_off();
+          }
 
           // 3) Defrost logic
           if (id(dehu_request).state && !isnan(id(evap_temp).state)) {
@@ -464,7 +478,19 @@ interval:
             if (!id(compressor_relay).state) {
               if (id(compressor_allowed) && id(rh_high_since_ms) != 0 &&
                   (now - id(rh_high_since_ms) >= ${rh_integrate_on_s} * 1000)) {
-                id(compressor_relay).turn_on();
+                std::string req = id(fan_mode_request).current_option();
+                if (req != "Off") {
+                  if (!id(compressor_start_pending)) {
+                    id(compressor_start_pending) = true;
+                    id(apply_fan_mode).execute();
+                  }
+                  if (id(fan_low_relay).state ||
+                      id(fan_med_relay).state ||
+                      id(fan_high_relay).state) {
+                    id(compressor_relay).turn_on();
+                    id(compressor_start_pending) = false;
+                  }
+                }
               }
             } else if (h < (sp - hy) &&
                        (now - id(comp_on_since_ms) >= ${min_on_time_s} * 1000)) {
