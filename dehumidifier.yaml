@@ -314,6 +314,11 @@ script:
             }
           }
 
+          if (comp_on && target == nullptr) {
+            target = id(fan_low_relay);
+            label = "Low (Compressor)";
+          }
+
           if (id(fan_low_relay).state && target != id(fan_low_relay)) id(fan_low_relay).turn_off();
           if (id(fan_med_relay).state && target != id(fan_med_relay)) id(fan_med_relay).turn_off();
           if (id(fan_high_relay).state && target != id(fan_high_relay)) id(fan_high_relay).turn_off();
@@ -403,6 +408,12 @@ interval:
             id(compressor_relay).turn_off();
             id(rh_high_since_ms) = 0;
           }
+          if (id(compressor_relay).state &&
+              !id(fan_low_relay).state &&
+              !id(fan_med_relay).state &&
+              !id(fan_high_relay).state) {
+            id(compressor_relay).turn_off();
+          }
 
           // 3) Defrost logic
           if (id(dehu_request).state && !isnan(id(evap_temp).state)) {
@@ -441,6 +452,11 @@ interval:
             if (!id(compressor_relay).state) {
               if (id(compressor_allowed) && id(rh_high_since_ms) != 0 &&
                   (now - id(rh_high_since_ms) >= ${rh_integrate_on_s} * 1000)) {
+                if (!id(fan_low_relay).state &&
+                    !id(fan_med_relay).state &&
+                    !id(fan_high_relay).state) {
+                  id(fan_low_relay).turn_on();
+                }
                 id(compressor_relay).turn_on();
               }
             } else if (h < (sp - hy) &&
