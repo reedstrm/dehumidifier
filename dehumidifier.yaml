@@ -411,11 +411,14 @@ interval:
           if (id(in_defrost)) {
             id(dehu_state).publish_state("Defrost");
           } else if (id(bucket_full).state) {
-            id(dehu_state).publish_state("Bucket Full");
+            id(dehu_state).publish_state("Idle (Bucket Full)");
           } else if (isnan(id(rh).state)) {
             id(dehu_state).publish_state("Bad RH Sensor");
           } else if (id(dehu_request).state) {
-            if (!id(compressor_allowed)) {
+            std::string req = id(fan_mode_request).current_option();
+            if (req == "Off") {
+              id(dehu_state).publish_state("Idle (Fan Off)");
+            } else if (!id(compressor_allowed)) {
               int rem = (id(lockout_end_ms) > millis()) ? (id(lockout_end_ms)-millis())/1000 : 0;
               char buf[32];
               sprintf(buf, "Lockout (%ds)", rem);
